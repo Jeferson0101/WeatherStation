@@ -20,6 +20,12 @@
 #include <Wire.h>
 
 #include <Adafruit_BMP280.h>
+// Sensor luminosidade
+#include <BH1750FVI.h>
+
+// Temperatura do solo
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 //-----------------------------------GSM------------------------------
 
@@ -30,7 +36,8 @@ const char pass[] = "vivo";
 
 TinyGsm modem(Serial1);
 TinyGsmClient client(modem);
-uint8_t gsmState = 0;
+String gsmLoc;
+//boolean gsmState = false;
 
 //-------------Configurações broker, mqtt e credenciais--------------
 PubSubClient mqtt(client);
@@ -93,7 +100,20 @@ Adafruit_BMP280 bmp; // I2C
 //--------------------Sensor de Chuva---------------------------------------
 #define pinSensorA A1
 
-//---------------------------------------------------------------------------
+//--------------------Sensor Luminosidade-----------------------------------
+BH1750FVI         myBH1750(BH1750_DEFAULT_I2CADDR, BH1750_CONTINUOUS_HIGH_RES_MODE_2, BH1750_SENSITIVITY_DEFAULT, BH1750_ACCURACY_DEFAULT);
+float lightLevel = 0;
+//----------------------Sensor_raio_uv------------------------------------------
+float uv_sensorVoltage;
+float uv_sensorValue;
+#define uvPin A4 
+
+//-------------------------Sensor_Temperatura_Solo---------------------------------------
+OneWire temp_solo_pin(3);
+DallasTemperature barramento(&temp_solo_pin);
+DeviceAddress temp_solo_address;
+float temperature;
+//---------------------------------------------------------------------------------------
 //Declarando os métodos para ficarem visíveis ao método principal
 void sendDhtData();
 void portaHandle();
@@ -104,7 +124,10 @@ void sendEndDirection();
 void sendData();
 void sendGroundHumidity();
 void sendRainSensor();
+void  lightnessSensor();
 void sendAtmosphericPressure();
+void sendUvSensor();
+void sendSoloTemp();
 
 boolean mqttConnect();
 
@@ -127,9 +150,17 @@ void setup() {
   //Comunicação GSM RX TX (0,1)
   Serial1.begin(9600);
 
+  //Sensor temperatura do solo
+  barramento.begin();
+  barramento.getAddress(temp_solo_address, 0); 
+
   //sensor de chuva
   pinMode(pinSensorA, INPUT);
 
+  //Sensor de luminosidade
+  if(myBH1750.begin() != true){
+    Serial.print(F("Não foi possível inicial o sensor de luminosidade"));
+  }
    // Barômetro
    if (!bmp.begin(0x76)) {
     Serial.println(F("Could not find a valid BMP280 sensor, check wiring!"));
@@ -149,14 +180,14 @@ void setup() {
 
 
 
-  if(gsmState == 0){
-    //ligar o GPRS automaticamente sem precisar pressionar o botão.
-      pinMode(9,OUTPUT);
-      digitalWrite(9, HIGH);
-      delay(2000);
-      digitalWrite(9, LOW);
-      gsmState = 1;
-  }
+  
+    //ligar o GPRS automaticamente sem precisar pressionar o botão.      
+    pinMode(9,OUTPUT);
+    digitalWrite(9, HIGH);
+    delay(2000);
+    digitalWrite(9, LOW);
+    
+  
 
   dht.begin();
 
@@ -205,6 +236,8 @@ void loop() {
 
 
    if(millis() - last_send > 500){
+     Serial.println("verificando se GPRS está conectado..");
+     modem.sendAT("AT");
     // if(mqtt.connected()){
 
     // }else{
@@ -270,7 +303,7 @@ void loop() {
     Serial.print("valorBateria");
     Serial.println(value);
     voltage = value * (3.3/1024)*((R1 + R2)/R2);
-    doc["BatteryCharge"]= voltage;
+    doc["BatteryCharge"] = voltage;
   } 
 
   void sendAnemometerData(){
@@ -373,6 +406,9 @@ void sendData(){
   sendGroundHumidity();
   sendRainSensor();
   sendBatteryCharge();
+  lightnessSensor();
+  sendUvSensor();
+  sendSoloTemp();
   sendAtmosphericPressure();
 
 
@@ -448,14 +484,22 @@ void addcount()
   counter++;
 }
 
+//Sensor de luminosidade
+void  lightnessSensor(){
+  lightLevel = myBH1750.readLightLevel();
+  doc["lightness"] = lightLevel;
+  // Serial.print(lightLevel);
+  // Serial.println(" lx");
+}
+
 // Sensor de Chuva
 void sendRainSensor(){
   if (analogRead(pinSensorA) > 700) {
-    doc["sensorChuva"] = 0;
+    doc["rainSensor"] = 0;
     //Serial.println("Não está chovendo");
      
   } else {
-    doc["sensorChuva"]= 1;
+    doc["rainSensor"]= 1;
     //Serial.println("Chovendo");
   }
 }
@@ -485,4 +529,70 @@ void portaHandle() {
   Serial.print("\nValor: ");
   Serial.print(valor);
   Serial.print(" mm");
+}
+
+void sendUvSensor(){
+  uv_sensorValue = analogRead(uvPin);
+  //Calcula uv_sensorVoltage em milivolts
+  float uv_sensorVoltage = uv_sensorValue/1024*3.3;
+  Serial.println("Valor analogico do sensor uv");
+  Serial.println(uv_sensorValue);
+  Serial.println("Valor da tensao");
+  Serial.println(uv_sensorVoltage);
+  
+  //Compara com valores tabela doc["uv_index"]
+   if (uv_sensorVoltage > 0 && uv_sensorVoltage <= 227)
+  {
+    doc["uv_index"] = 0;
+  }
+  else if (uv_sensorVoltage > 227 && uv_sensorVoltage <= 318)
+  {
+    doc["uv_index"] = 1;
+  }
+  else if (uv_sensorVoltage > 318 && uv_sensorVoltage <= 408)
+  {
+    doc["uv_index"] = 2;
+  }
+  else if (uv_sensorVoltage > 408 && uv_sensorVoltage <= 503)
+  {
+    doc["uv_index"] = 3;
+  }
+  else if (uv_sensorVoltage > 503 && uv_sensorVoltage <= 606)
+  {
+    doc["uv_index"] = 4;
+  }
+  else if (uv_sensorVoltage > 606 && uv_sensorVoltage <= 696)
+  {
+    doc["uv_index"] = 5;
+  }
+  else if (uv_sensorVoltage > 696 && uv_sensorVoltage <= 795)
+  {
+    doc["uv_index"] = 6;
+  }
+  else if (uv_sensorVoltage > 795 && uv_sensorVoltage <= 881)
+  {
+    doc["uv_index"] = 7;
+  }
+  else if (uv_sensorVoltage > 881 && uv_sensorVoltage <= 976)
+  {
+    doc["uv_index"] = 8;
+  }
+  else if (uv_sensorVoltage > 976 && uv_sensorVoltage <= 1079)
+  {
+    doc["uv_index"] = 9;
+  }
+  else if (uv_sensorVoltage > 1079 && uv_sensorVoltage <= 1170)
+  {
+    doc["uv_index"] = 10;
+  }
+  else if (uv_sensorVoltage > 1170)
+  {
+    doc["uv_index"] = 11;
+  }
+}
+
+void sendSoloTemp(){
+  barramento.requestTemperatures();
+  temperature = barramento.getTempC(temp_solo_address);
+  doc["solo_temperature"] = temperature;
 }
